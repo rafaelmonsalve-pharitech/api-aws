@@ -1,0 +1,145 @@
+﻿# ============================================================
+# COMANDOS PARA DEPLOYMENT A AWS
+# ============================================================
+
+# ------------------------------------------------------------
+# PASO 1: Verificar y Crear Secrets (EJECUTAR PRIMERO)
+# ------------------------------------------------------------
+
+# Secret 1: Credenciales de Base de Datos
+aws secretsmanager create-secret \
+    --name seven/db/credentials \
+    --description "Credenciales SQL Server Seven" \
+    --secret-string '{\"username\":\"<USUARIO_SQL>\",\"password\":\"<PASSWORD_SQL>\"}' \
+    --region us-east-2
+
+# Secret 2: API Keys Válidas
+aws secretsmanager create-secret \
+    --name seven/api/keys \
+    --description "API Keys autorizadas para Seven Arkeo Fleet" \
+    --secret-string '{\"valid_keys\":[\"LXH61UdMdT4w2aDWgfZj016PKKhAGsp45FMmgC12\"]}' \
+    --region us-east-2
+
+# Verificar que los secrets existen
+aws secretsmanager list-secrets --region us-east-2 --query 'SecretList[?contains(Name, seven)]'
+
+
+# ------------------------------------------------------------
+# PASO 2: Build de la Aplicación SAM (YA EJECUTADO)
+# ------------------------------------------------------------
+sam build --template infrastructure/template.yaml
+
+
+# ------------------------------------------------------------
+# PASO 3: Deploy a Staging (RECOMENDADO PRIMERO)
+# ------------------------------------------------------------
+sam deploy \
+    --config-env staging \
+    --region us-east-2 \
+    --stack-name tv-stg-seven-arkeo-fleet \
+    --capabilities CAPABILITY_IAM \
+    --resolve-s3 \
+    --parameter-overrides Environment=staging
+
+
+# ------------------------------------------------------------
+# PASO 4: Verificar Deploy Staging
+# ------------------------------------------------------------
+
+# Ver outputs del stack
+aws cloudformation describe-stacks \
+    --stack-name tv-stg-seven-arkeo-fleet \
+    --region us-east-2 \
+    --query 'Stacks[0].Outputs'
+
+# Ver URL del API
+aws cloudformation describe-stacks \
+    --stack-name tv-stg-seven-arkeo-fleet \
+    --region us-east-2 \
+    --query 'Stacks[0].Outputs[?OutputKey==ApiUrl].OutputValue' \
+    --output text
+
+
+# ------------------------------------------------------------
+# PASO 5: Probar API en Staging
+# ------------------------------------------------------------
+
+# Obtener URL del API
+$API_URL = aws cloudformation describe-stacks --stack-name tv-stg-seven-arkeo-fleet --region us-east-2 --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text
+
+# Probar endpoint de health
+curl -H "X-API-Key: LXH61UdMdT4w2aDWgfZj016PKKhAGsp45FMmgC12" $API_URL/api/v1/seven/openapi.json
+
+
+# ------------------------------------------------------------
+# PASO 6: Deploy a Producción (DESPUÉS DE VALIDAR STAGING)
+# ------------------------------------------------------------
+sam deploy \
+    --config-env default \
+    --region us-east-2 \
+    --stack-name tv-prd-seven-arkeo-fleet \
+    --capabilities CAPABILITY_IAM \
+    --resolve-s3 \
+    --parameter-overrides Environment=production \
+    --confirm-changeset
+
+
+# ------------------------------------------------------------
+# PASO 7: Verificar Deploy Producción
+# ------------------------------------------------------------
+
+# Ver outputs
+aws cloudformation describe-stacks \
+    --stack-name tv-prd-seven-arkeo-fleet \
+    --region us-east-2 \
+    --query 'Stacks[0].Outputs'
+
+# Obtener URL API Producción
+aws cloudformation describe-stacks \
+    --stack-name tv-prd-seven-arkeo-fleet \
+    --region us-east-2 \
+    --query 'Stacks[0].Outputs[?OutputKey==ApiUrl].OutputValue' \
+    --output text
+
+
+# ------------------------------------------------------------
+# PASO 8: Monitoreo Post-Deploy
+# ------------------------------------------------------------
+
+# Ver logs Lambda en tiempo real
+sam logs --stack-name tv-prd-seven-arkeo-fleet --tail
+
+# Ver logs de las últimas 10 minutos
+aws logs tail /aws/lambda/tv-prd-lambda-seven-arkeo-fleet --follow --region us-east-2
+
+# Ver métricas CloudWatch
+aws cloudwatch get-metric-statistics \
+    --namespace Seven/ArkeoFleet \
+    --metric-name RequestCount \
+    --start-time 2024-10-16T00:00:00Z \
+    --end-time 2024-10-16T23:59:59Z \
+    --period 3600 \
+    --statistics Sum \
+    --region us-east-2
+
+
+# ------------------------------------------------------------
+# COMANDOS DE ROLLBACK (SI ES NECESARIO)
+# ------------------------------------------------------------
+
+# Eliminar stack staging
+aws cloudformation delete-stack --stack-name tv-stg-seven-arkeo-fleet --region us-east-2
+
+# Eliminar stack producción
+aws cloudformation delete-stack --stack-name tv-prd-seven-arkeo-fleet --region us-east-2
+
+
+# ============================================================
+# NOTAS IMPORTANTES
+# ============================================================
+
+# 1. Reemplaza <USUARIO_SQL> y <PASSWORD_SQL> con las credenciales reales
+# 2. Asegúrate de que la VPC vpc-01c7cedbf7ffc4bda existe en us-east-2
+# 3. Verifica que las subnets y security group existen
+# 4. El Lambda Layer pytds debe existir: arn:aws:lambda:us-east-2:481133585213:layer:pytds_layer:1
+# 5. SIEMPRE deploya primero a staging y valida antes de producción
