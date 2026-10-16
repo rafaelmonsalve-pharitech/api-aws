@@ -1,0 +1,428 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  API Seven Arkeo Fleet - API REST serverless para integración entre ERP Seven y ARKEO Fleet
+  Empresa: TecnoVía (tv) - Ambiente: Producción (prd)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    Description: Ambiente de ejecución
+    AllowedValues:
+      - production
+      - staging
+  
+  Responsable:
+    Type: String
+    Default: DevOps TecnoVía
+    Description: Equipo responsable del proyecto
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Tracing: Active
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        REGION: !Ref AWS::Region
+        DB_HOST: 10.125.18.16
+        DB_PORT: 1433
+        DB_NAME: seven_db
+        DB_SECRET_NAME: seven/db/credentials
+        API_KEY_SECRET_NAME: seven/api/keys
+
+Resources:
+  # ============================================================================
+  # Lambda Function: tv-prd-lambda-seven-arkeo-fleet
+  # ============================================================================
+  SevenArkeoFleetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: tv-prd-lambda-seven-arkeo-fleet
+      Description: Función Lambda para API Seven Arkeo Fleet con conectividad VPC a SQL Server
+      CodeUri: ../src/
+      Handler: app.lambda_handler
+      
+      # VPC Configuration para conectividad con SQL Server on-premise
+      VpcConfig:
+        SubnetIds:
+          - subnet-0fbaebb0a7171c1f0  # Private subnet us-east-2a
+          - subnet-0c3acabe74c34791f   # Public subnet us-east-2b
+        SecurityGroupIds:
+          - sg-0b5608dadf9ea4c28       # Security Group con acceso a puerto 1433
+      
+      # Lambda Layer con pytds driver
+      Layers:
+        - arn:aws:lambda:us-east-2:481133585213:layer:pytds_layer:1
+      
+      # Políticas IAM
+      Policies:
+        # Acceso a Secrets Manager para credenciales DB y API Keys
+        - SecretsManagerReadWrite:
+            SecretArn: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:seven/db/credentials*'
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:seven/api/keys*'
+        
+        # Acceso a CloudWatch Logs
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/tv-prd-lambda-seven-arkeo-fleet:*'
+        
+        # Acceso a CloudWatch Metrics
+        - CloudWatchPutMetricPolicy: {}
+        
+        # Acceso VPC (ya incluido por SAM cuando se usa VpcConfig, pero explícito)
+        - VPCAccessPolicy: {}
+        
+        # X-Ray Tracing
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+              Resource: '*'
+      
+      # Tags corporativos
+      Tags:
+        Proyecto: API Seven Arkeo Fleet
+        Ambiente: !Ref Environment
+        Responsable: !Ref Responsable
+        Empresa: TecnoVía
+        Sistema: ARKEO Fleet
+      
+      # Eventos API Gateway
+      Events:
+        ListProducts:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SevenArkeoFleetApi
+            Path: /api/v1/seven/products
+            Method: GET
+        
+        ProductDetail:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SevenArkeoFleetApi
+            Path: /api/v1/seven/products/{codigo}
+            Method: GET
+        
+        ProductChanges:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SevenArkeoFleetApi
+            Path: /api/v1/seven/products/changes
+            Method: GET
+        
+        OpenAPISpec:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SevenArkeoFleetApi
+            Path: /api/v1/seven/openapi.json
+            Method: GET
+
+  # ============================================================================
+  # API Gateway REST API
+  # ============================================================================
+  SevenArkeoFleetApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: tv-prd-api-seven-arkeo-fleet
+      Description: API Gateway REST para API Seven Arkeo Fleet
+      StageName: prod
+      EndpointConfiguration:
+        Type: REGIONAL
+      
+      # CORS Configuration
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,X-API-Key'"
+        AllowMethods: "'GET,OPTIONS'"
+      
+      # Throttling Configuration
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 2000
+          ThrottlingRateLimit: 1000
+          LoggingLevel: INFO
+          DataTraceEnabled: true
+          MetricsEnabled: true
+      
+      # Access Logging
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayLogGroup.Arn
+        Format: '$context.requestId $context.extendedRequestId $context.identity.sourceIp $context.requestTime $context.httpMethod $context.routeKey $context.status $context.protocol $context.responseLength'
+      
+      # Tags
+      Tags:
+        Proyecto: API Seven Arkeo Fleet
+        Ambiente: !Ref Environment
+        Responsable: !Ref Responsable
+
+  # ============================================================================
+  # CloudWatch Log Groups
+  # ============================================================================
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/tv-prd-lambda-seven-arkeo-fleet
+      RetentionInDays: 30
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+
+  ApiGatewayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/apigateway/tv-prd-api-seven-arkeo-fleet
+      RetentionInDays: 30
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+
+  # ============================================================================
+  # CloudWatch Alarms
+  # ============================================================================
+  HighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: SevenArkeoFleet-HighErrorRate
+      AlarmDescription: Alerta cuando la tasa de errores supera el 5% en 5 minutos
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SevenArkeoFleetFunction
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+
+  HighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: SevenArkeoFleet-HighLatency
+      AlarmDescription: Alerta cuando el tiempo de respuesta supera 5000ms
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SevenArkeoFleetFunction
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+
+  SlowDatabaseAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: SevenArkeoFleet-SlowDatabase
+      AlarmDescription: Alerta cuando el tiempo de conexión a DB supera 10000ms
+      MetricName: DatabaseConnectionTime
+      Namespace: Seven/ArkeoFleet
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertsTopic
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+
+  # ============================================================================
+  # SNS Topic for Alerts
+  # ============================================================================
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: tv-prd-alerts-seven-arkeo-fleet
+      DisplayName: Alertas API Seven Arkeo Fleet
+      Tags:
+        - Key: Proyecto
+          Value: API Seven Arkeo Fleet
+        - Key: Ambiente
+          Value: !Ref Environment
+        - Key: Responsable
+          Value: !Ref Responsable
+
+  # Suscripción de email (debe ser confirmada manualmente)
+  AlertsTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlertsTopic
+      Endpoint: devops@tecnovia.com  # Cambiar por email real
+
+  # ============================================================================
+  # CloudWatch Dashboard
+  # ============================================================================
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: Seven-Arkeo-Fleet-Monitoring
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", {"stat": "Sum", "label": "Total Requests"}],
+                  [".", "Errors", {"stat": "Sum", "label": "Errors"}],
+                  [".", "Throttles", {"stat": "Sum", "label": "Throttles"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lambda Invocations",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "label": "Count"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Duration", {"stat": "Average", "label": "Avg Duration"}],
+                  ["...", {"stat": "Maximum", "label": "Max Duration"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Lambda Duration (ms)",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["Seven/ArkeoFleet", "RequestCount", {"stat": "Sum"}],
+                  [".", "ErrorCount", {"stat": "Sum"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Custom Metrics - Requests",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["Seven/ArkeoFleet", "ResponseTime", {"stat": "Average", "label": "Avg Response Time"}],
+                  [".", "DatabaseConnectionTime", {"stat": "Average", "label": "Avg DB Connection Time"}]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Response & DB Connection Times (ms)",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "label": "Milliseconds"
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "properties": {
+                "query": "SOURCE '/aws/lambda/tv-prd-lambda-seven-arkeo-fleet'\n| fields @timestamp, level, message, traceId\n| filter level = 'ERROR'\n| sort @timestamp desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "Recent Errors",
+                "stacked": false
+              }
+            }
+          ]
+        }
+
+# ============================================================================
+# Outputs
+# ============================================================================
+Outputs:
+  ApiUrl:
+    Description: URL base del API Gateway para Seven Arkeo Fleet API
+    Value: !Sub 'https://${SevenArkeoFleetApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  LambdaArn:
+    Description: ARN de la función Lambda Seven Arkeo Fleet
+    Value: !GetAtt SevenArkeoFleetFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaArn'
+
+  LambdaLogGroup:
+    Description: CloudWatch Log Group de la función Lambda
+    Value: !Ref LambdaLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaLogGroup'
+
+  ApiGatewayId:
+    Description: ID del API Gateway
+    Value: !Ref SevenArkeoFleetApi
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayId'
+
+  DashboardUrl:
+    Description: URL del Dashboard de CloudWatch para monitoreo
+    Value: !Sub 'https://console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=Seven-Arkeo-Fleet-Monitoring'
+
+  AlertsTopicArn:
+    Description: ARN del SNS Topic para alertas
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlertsTopicArn'

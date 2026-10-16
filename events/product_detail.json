@@ -1,0 +1,22 @@
+{
+  "httpMethod": "GET",
+  "path": "/api/v1/seven/products/7SUBSM001A",
+  "headers": {
+    "X-API-Key": "LXH61UdMdT4w2aDWgfZj016PKKhAGsp45FMmgC12",
+    "Content-Type": "application/json"
+  },
+  "queryStringParameters": {
+    "companyCode": "001"
+  },
+  "pathParameters": {
+    "codigo": "7SUBSM001A"
+  },
+  "body": null,
+  "isBase64Encoded": false,
+  "requestContext": {
+    "requestId": "test-request-id",
+    "identity": {
+      "sourceIp": "192.168.1.1"
+    }
+  }
+}

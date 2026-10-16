@@ -1,0 +1,14 @@
+# API Seven Arkeo Fleet - Development Dependencies
+# Testing and development tools
+
+# Testing framework
+pytest==7.4.3
+
+# Mocking library for pytest
+pytest-mock==3.12.0
+
+# Code coverage reporting
+pytest-cov==4.0.1
+
+# AWS service mocking library
+moto==4.2.0
